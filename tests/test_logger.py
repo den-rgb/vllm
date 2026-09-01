@@ -13,10 +13,9 @@ from uuid import uuid4
 
 import pytest
 
-from vllm.logger import (_DATE_FORMAT, _FORMAT, _configure_vllm_root_logger,
+from vllm.logger import (_configure_vllm_root_logger,
                          enable_trace_function_call, init_logger)
-from vllm.logging_utils import NewLineFormatter
-
+from vllm.logging_utils import OTelJSONFormatter
 
 def f1(x):
     return f2(x)
@@ -56,9 +55,7 @@ def test_default_vllm_root_logger_configuration():
 
     formatter = handler.formatter
     assert formatter is not None
-    assert isinstance(formatter, NewLineFormatter)
-    assert formatter._fmt == _FORMAT
-    assert formatter.datefmt == _DATE_FORMAT
+    assert isinstance(formatter, OTelJSONFormatter)
 
 
 @patch("vllm.logger.VLLM_CONFIGURE_LOGGING", 1)
@@ -216,3 +213,44 @@ def test_custom_logging_config_causes_an_error_if_configure_logging_is_off():
         assert other_logger.handlers != root_logger.handlers
         assert other_logger.level != root_logger.level
         assert other_logger.propagate
+
+
+def test_otel_json_formatter_schema_and_severity():
+    formatter = OTelJSONFormatter()
+    record = logging.LogRecord(
+        name="vllm.engine",
+        level=logging.WARNING,
+        pathname="engine.py",
+        lineno=10,
+        msg="kv cache full",
+        args=(),
+        exc_info=None,
+    )
+    payload = json.loads(formatter.format(record))
+    assert payload["body"] == "kv cache full"
+    assert payload["severity_text"] == "WARN"
+    assert payload["severity_number"] == 13
+    assert payload["logger"] == "vllm.engine"
+    assert payload["service.name"] == "vllm"
+    assert "timestamp" in payload
+
+
+def test_otel_json_formatter_injects_trace_context():
+    formatter = OTelJSONFormatter()
+    record = logging.LogRecord(
+        name="vllm",
+        level=logging.INFO,
+        pathname="logger.py",
+        lineno=1,
+        msg="hello",
+        args=(),
+        exc_info=None,
+    )
+    with patch("vllm.logging_utils.oteljson._trace_fields",
+               return_value={
+                   "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                   "span_id": "bbbbbbbbbbbbbbbb",
+               }):
+        payload = json.loads(formatter.format(record))
+    assert payload["trace_id"] == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    assert payload["span_id"] == "bbbbbbbbbbbbbbbb"
